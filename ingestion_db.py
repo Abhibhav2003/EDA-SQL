@@ -31,10 +31,10 @@ def load_raw_data():
     start = time.time()
     logging.info("---------- Starting Data Ingestion ----------")
     try:
-        for file in os.listdir('Datasets'):
+        for file in os.listdir('Dataset'):
             if file.endswith('.csv'):
                 try:
-                    df = pd.read_csv(os.path.join('Datasets', file))
+                    df = pd.read_csv(os.path.join('Dataset', file))
                     logging.info(f"Read CSV: {file}")
                     table_name = file[:-4]
                     ingest_db(df, table_name, engine)
