@@ -1,201 +1,145 @@
--- View the cleaned COVID deaths table (only actual countries, not aggregates like 'World')
+-- COVID-19 Data Exploration Project (MySQL Version)
+-- Skills Used: Joins, CTEs, Temp Tables, Window Functions, Aggregate Functions, Views, Type Conversions
+
+-- 1. View cleaned COVID deaths data (excluding null continents, i.e., only countries)
 SELECT * 
-FROM coviddeaths 
-WHERE continent IS NOT NULL 
+FROM coviddeaths
+WHERE continent IS NOT NULL
 ORDER BY location, date;
 
--- Preview the COVID vaccination data
-SELECT * 
-FROM covidvacc 
-ORDER BY location, date;
 
-
--- Select essential columns to analyze spread and impact
+-- 2. Selecting essential columns to start with
 SELECT location, date, total_cases, new_cases, total_deaths, population
 FROM coviddeaths
 WHERE continent IS NOT NULL
 ORDER BY location, date;
 
 
--- Change data types from string (VARCHAR) to FLOAT for calculations
-ALTER TABLE coviddeaths MODIFY COLUMN total_deaths FLOAT;
-ALTER TABLE coviddeaths MODIFY COLUMN new_deaths FLOAT;
-
-
--- Casting as signed integer (positive & negative numbers)
-SELECT CAST(total_deaths AS SIGNED) FROM coviddeaths;
-
--- Casting as unsigned integer (only positive numbers)
-SELECT CAST(total_deaths AS UNSIGNED) FROM coviddeaths;
-
-
--- CTE to calculate death percentage globally per country
-WITH CTE_COVID_DEATHS AS (
-  SELECT location,
-         SUM(total_cases) AS total_cases_,
-         SUM(total_deaths) AS total_deaths_,
-         (SUM(total_deaths) / SUM(total_cases)) * 100 AS death_percentage
-  FROM coviddeaths
-  WHERE continent IS NOT NULL
-  GROUP BY location
-)
-
--- Find the country with highest death percentage
-SELECT location, death_percentage
-FROM CTE_COVID_DEATHS
-WHERE death_percentage = (
-  SELECT MAX(death_percentage) FROM CTE_COVID_DEATHS
-);
-
-
--- Average death rate across all countries
-SELECT AVG((total_deaths / total_cases) * 100) AS avg_death_percentage
-FROM coviddeaths
-WHERE continent IS NOT NULL 
-  AND total_cases IS NOT NULL 
-  AND total_deaths IS NOT NULL;
-
-
--- India's death percentage over time
+-- 3. Total Cases vs Total Deaths
+-- Calculates the likelihood of dying if infected, specific to a country (e.g., United States)
 SELECT location, date, total_cases, total_deaths,
-       (total_deaths / total_cases) * 100 AS death_percentage
+       (total_deaths / NULLIF(total_cases, 0)) * 100 AS death_percentage
 FROM coviddeaths
-WHERE continent IS NOT NULL
-  AND total_deaths IS NOT NULL
-  AND location = 'India';
+WHERE location LIKE '%states%'
+  AND continent IS NOT NULL
+ORDER BY location, date;
 
--- India: percentage of population infected
+
+-- 4. Total Cases vs Population
+-- Shows what percentage of the population has been infected
 SELECT location, date, population, total_cases,
-       (total_cases / population) * 100 AS percentage_of_population
+       (total_cases / NULLIF(population, 0)) * 100 AS percent_population_infected
 FROM coviddeaths
-WHERE continent IS NOT NULL
-  AND total_deaths IS NOT NULL
-  AND location = 'India'
-ORDER BY total_cases DESC;
-
--- Maximum cases recorded on a single day in India
-SELECT MAX(total_cases) FROM coviddeaths WHERE location = 'India';
+ORDER BY location, date;
 
 
-SELECT date, total_cases
-FROM coviddeaths
-WHERE location = 'India'
-ORDER BY total_cases DESC
-LIMIT 1;
-
-
--- Countries with highest number of cases (and what % of their population got infected)
+-- 5. Countries with Highest Infection Rates relative to population
 SELECT location, population,
        MAX(total_cases) AS highest_infection_count,
-       MAX((total_cases / population)) * 100 AS percent_population
+       MAX((total_cases / NULLIF(population, 0))) * 100 AS percent_population_infected
+FROM coviddeaths
+GROUP BY location, population
+ORDER BY percent_population_infected DESC;
+
+
+-- 6. Countries with the Highest Death Count (raw numbers)
+SELECT location,
+       MAX(CAST(total_deaths AS UNSIGNED)) AS total_death_count
 FROM coviddeaths
 WHERE continent IS NOT NULL
-GROUP BY location, population
-ORDER BY highest_infection_count DESC;
-
-
-
--- For continents (or aggregates like World), since continent is NULL
-SELECT location, MAX(total_deaths) AS total_death_count
-FROM coviddeaths
-WHERE continent IS NULL AND location NOT IN ('World', 'International')
 GROUP BY location
 ORDER BY total_death_count DESC;
 
 
-SELECT location,
-       MAX(total_deaths / population) * 100 AS death_count_per_population
-FROM coviddeaths
-WHERE continent IS NULL
-  AND location NOT IN ('World', 'International')
-GROUP BY location
-ORDER BY death_count_per_population DESC;
-
--- This shows cumulative new cases and deaths per country per day
-SELECT location, date,
-       SUM(new_cases) AS total_cases,
-       SUM(new_deaths) AS total_deaths
+-- 7. Breakdown by Continent: Total Deaths
+SELECT continent,
+       MAX(CAST(total_deaths AS UNSIGNED)) AS total_death_count
 FROM coviddeaths
 WHERE continent IS NOT NULL
-GROUP BY location, date
-ORDER BY location, date;
+GROUP BY continent
+ORDER BY total_death_count DESC;
 
--- Find the first date when deaths were reported in Afghanistan
-SELECT location, date,
-       SUM(new_cases) AS total_cases,
-       SUM(new_deaths) AS total_deaths
+
+-- 8. Global Summary: Total Cases, Total Deaths, Global Death Percentage
+SELECT 
+    SUM(new_cases) AS total_cases,
+    SUM(CAST(new_deaths AS UNSIGNED)) AS total_deaths,
+    (SUM(CAST(new_deaths AS UNSIGNED)) / NULLIF(SUM(new_cases), 0)) * 100 AS global_death_percentage
 FROM coviddeaths
-WHERE continent IS NOT NULL
-  AND location = 'Afghanistan'
-GROUP BY location, date
-HAVING SUM(new_deaths) != 0
-ORDER BY date
-LIMIT 1;
+WHERE continent IS NOT NULL;
 
 
--- Join deaths & vaccinations data to calculate vaccination percentage
-SELECT cd.continent, cd.location, cd.date, cd.population,
-       (CAST(cv.new_vaccinations AS UNSIGNED) / cd.population) * 100 AS new_vacc_percentage
+-- 9. Rolling Vaccinations by Country
+-- Using a window function to show the running total of people vaccinated
+SELECT 
+    cd.continent, cd.location, cd.date, cd.population,
+    cv.new_vaccinations,
+    SUM(CAST(cv.new_vaccinations AS UNSIGNED)) 
+        OVER (PARTITION BY cd.location ORDER BY cd.date) AS rolling_people_vaccinated
 FROM coviddeaths cd
-JOIN covidvacc cv ON cd.date = cv.date AND cd.location = cv.location
-WHERE cd.continent IS NOT NULL
-ORDER BY cd.continent, new_vacc_percentage DESC;
-
-
--- Rolling sum of vaccinations per country
-CREATE OR REPLACE VIEW percent_population AS
-SELECT cd.continent, cd.location, cd.date, cd.population, cv.new_vaccinations,
-       SUM(CAST(cv.new_vaccinations AS UNSIGNED))
-         OVER (PARTITION BY cd.location ORDER BY cd.date)
-         AS rolling_people_vaccinated
-FROM coviddeaths cd
-JOIN covidvacc cv ON cd.location = cv.location AND cd.date = cv.date
-WHERE cd.continent IS NOT NULL;
-
-
-SELECT *, 
-       (rolling_people_vaccinated / population) * 100 AS percent_vaccinated
-FROM percent_population
-ORDER BY location, date;
-
-
--- Create and populate a temp table to allow for filtering, plotting, etc.
-CREATE TEMPORARY TABLE percent_population_temp (
-  continent VARCHAR(50),
-  location VARCHAR(50),
-  date DATE,
-  population INT,
-  new_vaccinations INT,
-  rolling_people_vaccinated BIGINT
-);
-
-INSERT INTO percent_population_temp
-SELECT cd.continent, cd.location, cd.date, cd.population,
-       CAST(cv.new_vaccinations AS UNSIGNED),
-       SUM(CAST(cv.new_vaccinations AS UNSIGNED))
-         OVER (PARTITION BY cd.location ORDER BY cd.date) AS rolling_people_vaccinated
-FROM coviddeaths cd
-JOIN covidvacc cv ON cd.location = cv.location AND cd.date = cv.date
+JOIN covidvaccinations cv
+  ON cd.location = cv.location AND cd.date = cv.date
 WHERE cd.continent IS NOT NULL
 ORDER BY cd.location, cd.date;
 
--- View the final result
-SELECT * FROM percent_population_temp;
+
+-- 10. CTE to calculate percent of population vaccinated (rolling)
+WITH pop_vs_vac AS (
+  SELECT 
+      cd.continent, cd.location, cd.date, cd.population,
+      cv.new_vaccinations,
+      SUM(CAST(cv.new_vaccinations AS UNSIGNED)) 
+          OVER (PARTITION BY cd.location ORDER BY cd.date) AS rolling_people_vaccinated
+  FROM coviddeaths cd
+  JOIN covidvaccinations cv
+    ON cd.location = cv.location AND cd.date = cv.date
+  WHERE cd.continent IS NOT NULL
+)
+SELECT *,
+       (rolling_people_vaccinated / NULLIF(population, 0)) * 100 AS percent_vaccinated
+FROM pop_vs_vac;
 
 
-SELECT location, date, new_cases
-FROM coviddeaths
-WHERE new_cases IS NOT NULL
-ORDER BY new_cases DESC
-LIMIT 10;
+-- 11. Temp Table for calculating vaccination % per country
+-- Temp tables are session-specific and allow for easier reuse in reporting
+DROP TEMPORARY TABLE IF EXISTS percent_population_vaccinated;
 
-SELECT location,
-       (total_recovered / total_cases) * 100 AS recovery_rate
-FROM coviddeaths
-WHERE total_cases IS NOT NULL AND total_recovered IS NOT NULL
-ORDER BY recovery_rate DESC;
+CREATE TEMPORARY TABLE percent_population_vaccinated (
+  continent VARCHAR(255),
+  location VARCHAR(255),
+  date DATE,
+  population BIGINT,
+  new_vaccinations BIGINT,
+  rolling_people_vaccinated BIGINT
+);
 
-SELECT date, new_vaccinations
-FROM covidvacc
-WHERE location = 'India'
-ORDER BY date;
+-- Inserting data into temp table
+INSERT INTO percent_population_vaccinated
+SELECT 
+    cd.continent, cd.location, cd.date, cd.population,
+    CAST(cv.new_vaccinations AS UNSIGNED),
+    SUM(CAST(cv.new_vaccinations AS UNSIGNED)) 
+        OVER (PARTITION BY cd.location ORDER BY cd.date) AS rolling_people_vaccinated
+FROM coviddeaths cd
+JOIN covidvaccinations cv
+  ON cd.location = cv.location AND cd.date = cv.date
+WHERE cd.continent IS NOT NULL;
+
+-- Viewing results from the temp table with % vaccinated
+SELECT *,
+       (rolling_people_vaccinated / NULLIF(population, 0)) * 100 AS percent_vaccinated
+FROM percent_population_vaccinated;
+
+
+-- 12. Creating a reusable view for percent vaccinated over time
+-- Views are useful for BI tools like Power BI / Tableau
+CREATE OR REPLACE VIEW percent_population_vaccinated_view AS
+SELECT 
+    cd.continent, cd.location, cd.date, cd.population,
+    cv.new_vaccinations,
+    SUM(CAST(cv.new_vaccinations AS UNSIGNED)) 
+        OVER (PARTITION BY cd.location ORDER BY cd.date) AS rolling_people_vaccinated
+FROM coviddeaths cd
+JOIN covidvaccinations cv
+  ON cd.location = cv.location AND cd.date = cv.date
+WHERE cd.continent IS NOT NULL;
